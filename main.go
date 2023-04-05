@@ -50,6 +50,8 @@ func main() {
 		}(ip)
 	}
 	wg.Wait()
+	// 只有在扫描完成后才进行保存，这样虽然会导致内存占用和消耗，但是提升了性能，比如扫描过程中的性能，并且减少磁盘损伤。
+	// 如果后续有时间，可以给扫描、保存分为两个主线程，在两个线程池中进行不同的操作。
 	of, err := os.Create(*outputfile)
 	if err != nil {
 		fmt.Println("无法创建文件:", err)
@@ -65,26 +67,26 @@ func main() {
 
 func checkPort(ip string, port int, timeout time.Duration, openOnly bool) string {
 	address := ip + ":" + strconv.Itoa(port)
-	conn, err := net.DialTimeout("tcp", address, 2e9)
+	conn, err := net.DialTimeout("tcp", address, timeout)
 	if openOnly == true {
 		// 如果openOnly为真，则只返回端口为打开的IP和端口
 		if err != nil {
-			//fmt.Printf("%s:%d closed\n", ip, port)
+			fmt.Printf("%s:%d closed\n", ip, port)
 			return "" // 这里需要一个返回，否则会导致继续执行下面的内容，如果不这样写就需要else。
 		}
 
 		conn.Close()
-		//fmt.Printf("%s:%d open\n", ip, port)
+		fmt.Printf("%s:%d open\n", ip, port)
 		return ip + ":" + strconv.Itoa(port)
 	} else {
 		// 如果不为真，则返回未打开的IP和端口
 		if err != nil {
-			//fmt.Printf("%s:%d closed\n", ip, port)
+			fmt.Printf("%s:%d closed\n", ip, port)
 			return ip + ":" + strconv.Itoa(port)
 		}
 
 		conn.Close()
-		//fmt.Printf("%s:%d open\n", ip, port)
+		fmt.Printf("%s:%d open\n", ip, port)
 		return ""
 	}
 }
