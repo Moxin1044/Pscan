@@ -23,7 +23,7 @@ func main() {
 
 	if *filename == "" || *port == 0 || *threads == 0 {
 		// Warning: 一定要注意修改了解析参数就一定要修改使用方法，后续也要在Readme进行补充。
-		fmt.Println("使用方法: \n Windows: Pscan.exe -F <file name> -P <port number> -T <number of threads> \n Mac or Linux: Pscan -F <file name> -P <port number> -T <number of threads>\n 更多高级用法请参考GitHub：")
+		fmt.Println("使用方法: \n Windows: Pscan.exe -F <file name> -P <port number> -T <number of threads> \n Mac or Linux: Pscan -F <file name> -P <port number> -T <number of threads>\n 更多高级用法请参考GitHub：https://github.com/Moxin1044/Pscan")
 		return
 	}
 
