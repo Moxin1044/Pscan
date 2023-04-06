@@ -5,6 +5,7 @@
 
 这个项目开源，也完全是因为这一点。本人Golang学的并不怎么样，但是因为Python的性能问题，就没有使用Python，只好百来度去，然后花了几个小时的时间啃了一下go这门语言。
 # 使用说明
+**您可以使用Piplist生成需要检测的IP：https://github.com/Moxin1044/Piplist**
 ## 1.默认配置：
 ### WIndows：
 ```
@@ -46,6 +47,28 @@ Pscan -F <file name> -P <port number> -T <number of threads>
 ```bash
 -timeout <Duration类型>
 # 如2s是2秒，1s就是1秒，默认2秒。
+```
+**有*的表示必填**
+## 3.例子
+### 扫描123.txt里的80端口，线程10，默认其他选项
+```bash
+Pscan -F 123.txt -P 80 -T 10
+```
+### 扫描123.txt里的80端口，线程10，输出到AAA.txt
+```bash
+Pscan -F 123.txt -P 80 -T 10 -O AAA.txt
+```
+### 扫描ip.txt的80端口，线程10，输出到save.txt
+```bash
+Pscan -P 80 -T 10
+```
+### 扫描123.txt里的80端口，线程10，超时时间为5秒
+```bash
+Pscan -F 123.txt -P 80 -T 10 -timeout 5s
+```
+### 扫描123.txt里没有开放80端口，线程10，输出到false.txt
+```bash
+Pscan -F 123.txt -P 80 -T 10 -O -OF False false.txt
 ```
 # 其他
 ## 开源协议
