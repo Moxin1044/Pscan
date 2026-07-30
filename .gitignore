@@ -1,0 +1,4 @@
+/target/
+*.jsonl
+*.txt
+.env
