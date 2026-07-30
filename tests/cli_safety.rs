@@ -16,6 +16,9 @@ fn help_exposes_only_scanner_options() {
     assert!(stdout.contains("--udp"));
     assert!(stdout.contains("--ping"));
     assert!(stdout.contains("--ping-only"));
+    assert!(stdout.contains("--check-update"));
+    assert!(stdout.contains("--update"));
+    assert!(stdout.contains("--no-update-check"));
     assert!(!stdout.contains("audit"));
     assert!(!stdout.contains("template"));
 }

@@ -3,6 +3,7 @@ pub mod output;
 pub mod ports;
 pub mod scanner;
 pub mod target;
+pub mod updater;
 
 use thiserror::Error;
 
