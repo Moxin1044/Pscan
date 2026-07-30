@@ -87,6 +87,18 @@ struct Cli {
     /// Write results to a file instead of stdout.
     #[arg(short = 'o', long)]
     output: Option<PathBuf>,
+
+    /// Check whether a newer release is available on GitHub and exit.
+    #[arg(long)]
+    check_update: bool,
+
+    /// Download the latest release and replace the current binary.
+    #[arg(long)]
+    update: bool,
+
+    /// Disable the background update check that normally runs at startup.
+    #[arg(long)]
+    no_update_check: bool,
 }
 
 enum RunOutcome {
@@ -97,7 +109,26 @@ enum RunOutcome {
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    match run(Cli::parse()).await {
+    let cli = Cli::parse();
+
+    if cli.check_update {
+        return run_check_update();
+    }
+    if cli.update {
+        return run_self_update();
+    }
+
+    // Background nudge before we start real work. Only when the user has not
+    // opted out and the scan has actual targets — otherwise --help / --version
+    // paths never reach this point.
+    if !cli.no_update_check {
+        pscan::updater::maybe_prompt_from_cache();
+        if !pscan::updater::should_skip_check() {
+            pscan::updater::refresh_cache_in_background();
+        }
+    }
+
+    match run(cli).await {
         Ok(RunOutcome::Ok) => ExitCode::SUCCESS,
         Ok(RunOutcome::Cancelled) => {
             eprintln!("pscan: cancelled; completed results were flushed");
@@ -106,6 +137,43 @@ async fn main() -> ExitCode {
         Ok(RunOutcome::ResolutionFailure) => ExitCode::from(2),
         Err(error) => {
             eprintln!("pscan: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_check_update() -> ExitCode {
+    match pscan::updater::check_now() {
+        Ok(outcome) if outcome.is_newer => {
+            println!(
+                "pscan {} is available (current {}). Run `pscan --update` to install.",
+                outcome.latest, outcome.current
+            );
+            ExitCode::SUCCESS
+        }
+        Ok(outcome) => {
+            println!("pscan is up to date ({})", outcome.current);
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("pscan: update check failed: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_self_update() -> ExitCode {
+    match pscan::updater::install_latest() {
+        Ok(status) if status.is_updated() => {
+            println!("pscan updated to {}", status.version());
+            ExitCode::SUCCESS
+        }
+        Ok(status) => {
+            println!("pscan is already on {}", status.version());
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("pscan: update failed: {error}");
             ExitCode::FAILURE
         }
     }

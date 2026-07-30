@@ -154,6 +154,23 @@ pscan -f targets.txt -p 1-65535 --rate 500 --format jsonl -o scan.jsonl
 | `--format text\|jsonl` | 输出格式 |
 | `-o, --output <FILE>` | 写入文件，默认写标准输出 |
 
+## 自更新
+
+Pscan 会在启动时静默检查 GitHub 上的最新 Release（每 24 小时至多一次），发现有更新则在 stderr 打一行提示，交互式终端下询问是否立即更新。
+
+主动使用：
+
+```bash
+pscan --check-update     # 查询远端最新版并退出
+pscan --update           # 下载最新版并替换当前二进制
+pscan --no-update-check  # 本次运行不做更新检查
+```
+
+- 检查结果会缓存到 `$XDG_CACHE_HOME/pscan/update.json`（默认 `~/.cache/pscan/update.json`）
+- 用户在提示里回复 `s` / `skip` 可以跳过该版本，下次出更新版才会再提示
+- 检查在后台线程运行，不阻塞扫描
+- 首次访问 GitHub API 若遇到 rate limit（HTTP 403），错误只写到 stderr，不影响扫描
+
 ## 退出码
 
 | 码 | 含义 |
