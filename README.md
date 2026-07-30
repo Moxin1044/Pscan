@@ -28,7 +28,50 @@
 
 每个归档同时提供 `.sha256` 校验文件。
 
-或者从源码构建：
+### Linux / macOS 一键安装
+
+```bash
+# 选一个平台组合，例如 Linux x86_64 musl：
+TARGET=x86_64-unknown-linux-musl
+VERSION=v2.0.0
+
+# 下载并校验
+curl -LO "https://github.com/Moxin1044/Pscan/releases/download/${VERSION}/pscan-${VERSION}-${TARGET}.tar.gz"
+curl -LO "https://github.com/Moxin1044/Pscan/releases/download/${VERSION}/pscan-${VERSION}-${TARGET}.tar.gz.sha256"
+sha256sum -c "pscan-${VERSION}-${TARGET}.tar.gz.sha256"
+
+# 解压并安装
+tar -xzf "pscan-${VERSION}-${TARGET}.tar.gz"
+sudo install -m 0755 pscan /usr/local/bin/pscan
+rm "pscan-${VERSION}-${TARGET}.tar.gz" "pscan-${VERSION}-${TARGET}.tar.gz.sha256" pscan
+
+# 验证
+pscan --version
+```
+
+只装到当前用户可以省 sudo：
+
+```bash
+mkdir -p "$HOME/.local/bin"
+install -m 0755 pscan "$HOME/.local/bin/pscan"
+# 确保 ~/.local/bin 在 PATH 中
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+```
+
+### Windows
+
+```powershell
+$VERSION = "v2.0.0"
+$TARGET  = "x86_64-pc-windows-msvc"
+$ZIP     = "pscan-$VERSION-$TARGET.zip"
+
+Invoke-WebRequest -Uri "https://github.com/Moxin1044/Pscan/releases/download/$VERSION/$ZIP" -OutFile $ZIP
+Expand-Archive -Path $ZIP -DestinationPath $env:USERPROFILE\bin
+# 将 %USERPROFILE%\bin 加入用户 PATH 后：
+pscan --version
+```
+
+### 从源码构建
 
 ```bash
 git clone https://github.com/Moxin1044/Pscan
