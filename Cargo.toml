@@ -1,0 +1,28 @@
+[package]
+name = "pscan"
+version = "2.0.0"
+edition = "2024"
+rust-version = "1.96"
+license = "MIT"
+description = "High-performance TCP/UDP port scanner with host discovery and service fingerprinting"
+repository = "https://github.com/Moxin1044/Pscan"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+futures = "0.3"
+ipnet = "2.11"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+surge-ping = "0.9"
+thiserror = "2.0"
+tokio = { version = "1.47", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+
+[dev-dependencies]
+tempfile = "3.20"
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
+panic = "abort"
