@@ -65,6 +65,9 @@ async fn silent_udp_port_is_open_or_filtered() {
     assert_eq!(results[0].udp_state, Some(UdpState::OpenOrFiltered));
 }
 
+// Linux 内核通过 ICMP Port Unreachable 让 connected UDP socket 的 recv 返回
+// ConnectionRefused；Windows 不做这个映射，所以只在 Unix 上验证 UdpState::Closed。
+#[cfg(unix)]
 #[tokio::test]
 async fn closed_udp_port_reports_closed_when_icmp_is_available() {
     let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
