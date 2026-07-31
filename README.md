@@ -33,7 +33,7 @@
 ```bash
 # 选一个平台组合，例如 Linux x86_64 musl：
 TARGET=x86_64-unknown-linux-musl
-VERSION=v2.0.0
+VERSION=v2.2.0
 
 # 下载并校验
 curl -LO "https://github.com/Moxin1044/Pscan/releases/download/${VERSION}/pscan-${VERSION}-${TARGET}.tar.gz"
@@ -61,7 +61,7 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 ### Windows
 
 ```powershell
-$VERSION = "v2.0.0"
+$VERSION = "v2.2.0"
 $TARGET  = "x86_64-pc-windows-msvc"
 $ZIP     = "pscan-$VERSION-$TARGET.zip"
 
@@ -91,7 +91,7 @@ cargo build --release --locked
 - **限速**：全局每秒任务启动上限
 - **超时**：DNS、连接、指纹三段独立可调
 - **取消**：`Ctrl-C` 协作取消并 flush 已完成结果
-- **输出**：文本、JSONL 流式写出
+- **输出**：带状态颜色、稳定列布局和结束汇总的终端文本；JSONL 流式写出
 
 ## 快速上手
 
@@ -153,6 +153,7 @@ pscan -f targets.txt -p 1-65535 --rate 500 --format jsonl -o scan.jsonl
 | `--show-closed` | 输出 closed、`open\|filtered`、`unknown` 等非开放结果 |
 | `--format text\|jsonl` | 输出格式 |
 | `-o, --output <FILE>` | 写入文件，默认写标准输出 |
+| `--color auto\|always\|never` | 文本颜色策略，默认仅交互终端启用 |
 
 ## 自更新
 
@@ -185,9 +186,12 @@ pscan --no-update-check  # 本次运行不做更新检查
 TCP 文本：
 
 ```text
-127.0.0.1:22/tcp open service=ssh product=OpenSSH version=9.9p1
-127.0.0.1:80/tcp closed error="Connection refused (os error 111)"
-[::1]:22/tcp open service=ssh
++ open          127.0.0.1:22            tcp      1 ms  ssh OpenSSH 9.9p1
+- closed        127.0.0.1:80            tcp      0 ms
+    error   Connection refused (os error 111)
++ open          [::1]:22                tcp      0 ms  ssh
+------------------------------------------------------------
+Summary  3 scanned  2 open  1 closed
 ```
 
 JSONL：
@@ -196,7 +200,7 @@ JSONL：
 {"kind":"scan","host":"127.0.0.1","ip":"127.0.0.1","port":22,"open":true,"latency_ms":0,"transport":"tcp","service":"ssh","product":"OpenSSH","version":"9.9p1"}
 ```
 
-IPv6 地址在文本输出中会加方括号。
+文本输出按结果到达顺序流式展示，不等待整个扫描结束。交互终端默认使用颜色；重定向、管道和 `-o` 文件默认不写 ANSI 转义，设置 `NO_COLOR` 或 `--color never` 可强制关闭颜色。IPv6 地址在文本输出中会加方括号。JSONL 的字段和逐行结构不受终端展示优化影响。
 
 ## UDP 状态
 

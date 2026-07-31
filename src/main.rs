@@ -3,7 +3,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::Parser;
-use pscan::output::{OutputFormat, ResultWriter};
+use pscan::output::{ColorMode, OutputFormat, ResultWriter};
 use pscan::ports::parse_ports;
 use pscan::scanner::{
     CancellationToken, HostDiscoveryConfig, HostState, ScanConfig, Transport, discover_hosts,
@@ -87,6 +87,10 @@ struct Cli {
     /// Write results to a file instead of stdout.
     #[arg(short = 'o', long)]
     output: Option<PathBuf>,
+
+    /// Colorize text output: auto, always, or never.
+    #[arg(long, value_enum, default_value_t = ColorMode::Auto)]
+    color: ColorMode,
 
     /// Check whether a newer release is available on GitHub and exit.
     #[arg(long)]
@@ -198,7 +202,7 @@ async fn run(cli: Cli) -> Result<RunOutcome> {
         }
     });
 
-    let mut writer = ResultWriter::new(cli.format, cli.output.as_deref())?;
+    let mut writer = ResultWriter::with_color(cli.format, cli.output.as_deref(), cli.color)?;
     let (resolved, resolution_failures) =
         resolve_targets(&targets, Duration::from_millis(cli.timeout_ms), &cancel).await;
     for (host, error) in &resolution_failures {
@@ -274,12 +278,14 @@ async fn run(cli: Cli) -> Result<RunOutcome> {
         let output = async {
             let mut result: Result<()> = Ok(());
             while let Some(record) = receiver.recv().await {
-                if (record.open || cli.show_closed)
-                    && let Err(error) = writer.write(&record)
-                {
-                    result = Err(error);
-                    output_cancel.cancel();
-                    break;
+                if record.open || cli.show_closed {
+                    if let Err(error) = writer.write(&record) {
+                        result = Err(error);
+                        output_cancel.cancel();
+                        break;
+                    }
+                } else {
+                    writer.record_hidden(&record);
                 }
             }
             while receiver.recv().await.is_some() {}
@@ -294,6 +300,8 @@ async fn run(cli: Cli) -> Result<RunOutcome> {
         output_result?;
     }
 
+    writer.write_summary()?;
+    writer.flush()?;
     signal_task.abort();
     if cancel.is_cancelled() {
         Ok(RunOutcome::Cancelled)
