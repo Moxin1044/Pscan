@@ -39,6 +39,28 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc as async_mpsc;
 pub use tokio_util::sync::CancellationToken;
 
+// musl 目标上的 `libc` crate 没有声明 `sendmmsg` / `recvmmsg`（只有 gnu / uclibc 声明），
+// 这里按 POSIX 原型直接声明；这两个符号在 glibc 与 musl 中都会导出。
+#[cfg(target_os = "linux")]
+unsafe extern "C" {
+    // 一次发送多条报文（Linux）。
+    fn sendmmsg(
+        fd: libc::c_int,
+        msgvec: *mut libc::mmsghdr,
+        vlen: libc::c_uint,
+        flags: libc::c_int,
+    ) -> libc::c_int;
+
+    // 一次接收多条报文（Linux）。
+    fn recvmmsg(
+        fd: libc::c_int,
+        msgvec: *mut libc::mmsghdr,
+        vlen: libc::c_uint,
+        flags: libc::c_int,
+        timeout: *mut libc::timespec,
+    ) -> libc::c_int;
+}
+
 use crate::fingerprint;
 use crate::scanner::{ResolvedTarget, ScanResult, TcpState, Transport, scan_connect_resolved};
 
@@ -773,7 +795,7 @@ fn receive_loop_linux(
             continue;
         }
         let count = unsafe {
-            libc::recvmmsg(
+            recvmmsg(
                 fd,
                 messages.as_mut_ptr(),
                 RECV_BATCH as libc::c_uint,
@@ -1191,7 +1213,7 @@ impl BatchSender {
         let mut retries = 0usize;
         while sent < self.pending {
             let count = unsafe {
-                libc::sendmmsg(
+                sendmmsg(
                     socket.as_raw_fd(),
                     self.messages.as_mut_ptr().add(sent),
                     (self.pending - sent) as libc::c_uint,
