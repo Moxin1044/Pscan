@@ -33,7 +33,7 @@
 ```bash
 # 选一个平台组合，例如 Linux x86_64 musl：
 TARGET=x86_64-unknown-linux-musl
-VERSION=v2.2.0
+VERSION=v2.3.0
 
 # 下载并校验
 curl -LO "https://github.com/Moxin1044/Pscan/releases/download/${VERSION}/pscan-${VERSION}-${TARGET}.tar.gz"
@@ -61,7 +61,7 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 ### Windows
 
 ```powershell
-$VERSION = "v2.2.0"
+$VERSION = "v2.3.0"
 $TARGET  = "x86_64-pc-windows-msvc"
 $ZIP     = "pscan-$VERSION-$TARGET.zip"
 

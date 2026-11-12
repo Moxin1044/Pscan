@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+（暂无）
+
+## [2.3.0] - 2026-11-13
+
 ### 新增
 
 - `--syn` SYN 半开扫描：原始套接字发送 SYN，按 SYN-ACK / RST / 超时区分 open / closed / filtered；需要 root 或 `CAP_NET_RAW`，与 `--udp`、`-s` 互斥，IPv6 自动回退 connect。回环 65,535 端口 `-c 2048` 约 0.57 s
