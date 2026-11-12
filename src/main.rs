@@ -1,3 +1,13 @@
+//! `pscan` 命令行入口。
+//!
+//! 本文件只负责三件事：
+//!
+//! 1. 定义 CLI（[`Cli`]）并做参数校验；
+//! 2. 编排「目标展开 → DNS 解析 → 主机发现 → 端口扫描 → 结果输出」的流程；
+//! 3. 把结果映射为进程退出码。
+//!
+//! 真正的扫描逻辑在 [`pscan::scanner`]，输出在 [`pscan::output`]。
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -13,6 +23,37 @@ use pscan::target::{TargetOptions, load_targets};
 use pscan::{PscanError, Result};
 use tokio::sync::mpsc;
 
+/// 未指定 `--ports` 时的默认扫描范围。
+const DEFAULT_PORTS: &str = "1-1024";
+
+/// 未指定 `--ping-ports` 时的 TCP 回退端口。
+const DEFAULT_PING_PORTS: &str = "80,443,22";
+
+/// 默认并发网络操作数。
+const DEFAULT_CONCURRENCY: usize = 512;
+
+/// 默认 DNS / TCP / UDP / 主机发现超时（毫秒）。
+const DEFAULT_TIMEOUT_MS: u64 = 1_200;
+
+/// 默认每条连接的指纹识别预算（毫秒）。
+const DEFAULT_FINGERPRINT_TIMEOUT_MS: u64 = 800;
+
+/// 默认目标展开上限。
+const DEFAULT_MAX_HOSTS: usize = 65_536;
+
+/// 默认结果通道容量。
+const DEFAULT_RESULT_BUFFER: usize = 1_024;
+
+/// 默认限速值，0 表示不限速。
+const DEFAULT_RATE: u32 = 0;
+
+/// `Ctrl-C` / 写入失败导致的取消退出码。
+const EXIT_CODE_CANCELLED: u8 = 130;
+
+/// 至少一个目标解析失败时的退出码。
+const EXIT_CODE_RESOLUTION_FAILURE: u8 = 2;
+
+/// 命令行参数。
 #[derive(Debug, Parser)]
 #[command(
     name = "pscan",
@@ -29,7 +70,7 @@ struct Cli {
     target_file: Option<PathBuf>,
 
     /// Ports and inclusive ranges, for example 22,80,443,8000-8010.
-    #[arg(short = 'p', long, default_value = "1-1024")]
+    #[arg(short = 'p', long, default_value = DEFAULT_PORTS)]
     ports: String,
 
     /// Scan UDP instead of TCP.
@@ -45,23 +86,23 @@ struct Cli {
     ping_only: bool,
 
     /// TCP ports used as host-discovery fallback when ICMP gets no reply.
-    #[arg(long, default_value = "80,443,22")]
+    #[arg(long, default_value = DEFAULT_PING_PORTS)]
     ping_ports: String,
 
     /// Maximum concurrent network operations.
-    #[arg(short = 'c', long, default_value_t = 512)]
+    #[arg(short = 'c', long, default_value_t = DEFAULT_CONCURRENCY)]
     concurrency: usize,
 
     /// Maximum scan attempts started per second; zero means unlimited.
-    #[arg(long, default_value_t = 0)]
+    #[arg(long, default_value_t = DEFAULT_RATE)]
     rate: u32,
 
     /// DNS, TCP connect, UDP reply, and host-discovery timeout in milliseconds.
-    #[arg(long, default_value_t = 1200)]
+    #[arg(long, default_value_t = DEFAULT_TIMEOUT_MS)]
     timeout_ms: u64,
 
     /// Total service fingerprinting budget per open TCP connection in milliseconds.
-    #[arg(long, default_value_t = 800)]
+    #[arg(long, default_value_t = DEFAULT_FINGERPRINT_TIMEOUT_MS)]
     fingerprint_timeout_ms: u64,
 
     /// Read passive TCP banners and send small protocol identification probes.
@@ -73,11 +114,11 @@ struct Cli {
     show_closed: bool,
 
     /// Maximum expanded target count.
-    #[arg(long, default_value_t = 65_536)]
+    #[arg(long, default_value_t = DEFAULT_MAX_HOSTS)]
     max_hosts: usize,
 
     /// Bounded result queue capacity.
-    #[arg(long, default_value_t = 1024)]
+    #[arg(long, default_value_t = DEFAULT_RESULT_BUFFER)]
     result_buffer: usize,
 
     /// Output format.
@@ -105,12 +146,21 @@ struct Cli {
     no_update_check: bool,
 }
 
+/// 一次扫描的最终走向，用于决定退出码。
 enum RunOutcome {
+    /// 全部目标扫描完成。
     Ok,
+    /// 被 `Ctrl-C` 或写入失败取消。
     Cancelled,
+    /// 至少一个目标 DNS 解析失败。
     ResolutionFailure,
 }
 
+/// 进程入口：解析参数、分派自更新或扫描、映射退出码。
+///
+/// # 返回
+///
+/// * [`ExitCode`] - 0 成功、1 参数/IO 错误、2 解析失败、130 取消。
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -122,9 +172,8 @@ async fn main() -> ExitCode {
         return run_self_update();
     }
 
-    // Background nudge before we start real work. Only when the user has not
-    // opted out and the scan has actual targets — otherwise --help / --version
-    // paths never reach this point.
+    // 只在真正要扫描时才做后台更新提示：`--help` / `--version` 走 clap
+    // 内部路径，根本到不了这里。
     if !cli.no_update_check {
         pscan::updater::maybe_prompt_from_cache();
         if !pscan::updater::should_skip_check() {
@@ -136,9 +185,9 @@ async fn main() -> ExitCode {
         Ok(RunOutcome::Ok) => ExitCode::SUCCESS,
         Ok(RunOutcome::Cancelled) => {
             eprintln!("pscan: cancelled; completed results were flushed");
-            ExitCode::from(130)
+            ExitCode::from(EXIT_CODE_CANCELLED)
         }
-        Ok(RunOutcome::ResolutionFailure) => ExitCode::from(2),
+        Ok(RunOutcome::ResolutionFailure) => ExitCode::from(EXIT_CODE_RESOLUTION_FAILURE),
         Err(error) => {
             eprintln!("pscan: {error}");
             ExitCode::FAILURE
@@ -146,6 +195,11 @@ async fn main() -> ExitCode {
     }
 }
 
+/// 处理 `--check-update`。
+///
+/// # 返回
+///
+/// * [`ExitCode`] - 查询成功为 0，网络或解析失败为 1。
 fn run_check_update() -> ExitCode {
     match pscan::updater::check_now() {
         Ok(outcome) if outcome.is_newer => {
@@ -166,6 +220,11 @@ fn run_check_update() -> ExitCode {
     }
 }
 
+/// 处理 `--update`。
+///
+/// # 返回
+///
+/// * [`ExitCode`] - 更新或已是最新为 0，失败为 1。
 fn run_self_update() -> ExitCode {
     match pscan::updater::install_latest() {
         Ok(status) if status.is_updated() => {
@@ -183,6 +242,24 @@ fn run_self_update() -> ExitCode {
     }
 }
 
+/// 执行一次完整扫描流程。
+///
+/// 流程顺序：目标展开 → 注册信号 → 解析 DNS →（可选）主机发现 → 端口扫描
+/// → 汇总输出。扫描与输出用 `tokio::join!` 并行，避免输出慢拖住扫描。
+///
+/// # 参数
+///
+/// * `cli` - 已解析的命令行参数。
+///
+/// # 返回
+///
+/// * `Ok(RunOutcome)` - 扫描完成、被取消或存在解析失败。
+///
+/// # 错误
+///
+/// * [`PscanError::InvalidInput`] - 参数组合非法。
+/// * [`PscanError::Io`] - 目标文件或输出文件读写失败。
+/// * [`PscanError::Json`] - JSONL 序列化失败。
 async fn run(cli: Cli) -> Result<RunOutcome> {
     validate_cli(&cli)?;
     let targets = load_targets(
@@ -246,6 +323,7 @@ async fn run(cli: Cli) -> Result<RunOutcome> {
             if result.state == HostState::Alive {
                 alive.push(result.ip.clone());
             }
+            // `unknown` 不等于离线，只在显式 `--show-closed` 时才展示。
             if result.state == HostState::Alive || cli.show_closed {
                 writer.write_host(&result)?;
             }
@@ -280,6 +358,7 @@ async fn run(cli: Cli) -> Result<RunOutcome> {
             while let Some(record) = receiver.recv().await {
                 if record.open || cli.show_closed {
                     if let Err(error) = writer.write(&record) {
+                        // 写入失败：立即取消扫描，避免继续做无用功。
                         result = Err(error);
                         output_cancel.cancel();
                         break;
@@ -288,6 +367,7 @@ async fn run(cli: Cli) -> Result<RunOutcome> {
                     writer.record_hidden(&record);
                 }
             }
+            // 排空通道，让扫描侧不会阻塞在已无人消费的发送上。
             while receiver.recv().await.is_some() {}
             if result.is_ok()
                 && let Err(error) = writer.flush()
@@ -312,6 +392,20 @@ async fn run(cli: Cli) -> Result<RunOutcome> {
     }
 }
 
+/// 校验参数组合是否合法。
+///
+/// # 参数
+///
+/// * `cli` - 命令行参数。
+///
+/// # 返回
+///
+/// * `Ok(())` - 参数组合合法。
+///
+/// # 错误
+///
+/// * [`PscanError::InvalidInput`] - 缺少目标、并发/缓冲/超时为 0，
+///   或在 UDP 模式下请求了服务指纹。
 fn validate_cli(cli: &Cli) -> Result<()> {
     if cli.targets.is_empty() && cli.target_file.is_none() {
         return Err(PscanError::InvalidInput(
