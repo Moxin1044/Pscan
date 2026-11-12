@@ -93,6 +93,8 @@ const RECV_SOCKET_BUFFER: i32 = 16 * 1024 * 1024;
 
 /// 接收线程单次阻塞的上限：足够短以及时响应取消，又避免空转。
 const RECV_POLL_MILLIS: i32 = 1;
+/// 非 Linux 平台阻塞 `recv` 的超时，用于周期性检查取消标志。
+const RECV_TIMEOUT_MICROS: libc::suseconds_t = 100_000;
 
 /// 主循环在无事可做时最长的阻塞时间；用于定期检查取消标志。
 const WAIT_SLICE_MILLIS: u64 = 50;
@@ -615,6 +617,19 @@ fn open_raw_socket() -> io::Result<OwnedFd> {
         libc::SO_SNDBUF,
         RECV_SOCKET_BUFFER,
     )?;
+
+    // Linux 用 `poll` + `MSG_DONTWAIT` 收包，这里的超时只服务于非 Linux 的阻塞 `recv`：
+    // 让接收线程定期醒来看一眼取消标志。
+    let timeout = libc::timeval {
+        tv_sec: 0,
+        tv_usec: RECV_TIMEOUT_MICROS,
+    };
+    set_timeval_option(
+        socket.as_raw_fd(),
+        libc::SOL_SOCKET,
+        libc::SO_RCVTIMEO,
+        timeout,
+    )?;
     Ok(socket)
 }
 
@@ -631,6 +646,36 @@ fn open_raw_socket() -> io::Result<OwnedFd> {
 fn duplicate(socket: &OwnedFd) -> Option<OwnedFd> {
     let fd = unsafe { libc::dup(socket.as_raw_fd()) };
     (fd >= 0).then(|| unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// 设置一个 `timeval` 类型的套接字选项。
+///
+/// # 参数
+///
+/// * `fd` - 套接字描述符。
+/// * `level` - 选项层级。
+/// * `name` - 选项名。
+/// * `value` - 选项值。
+///
+/// # 返回
+///
+/// * `Ok(())` - 设置成功。
+/// * `Err(io::Error)` - 系统调用失败。
+fn set_timeval_option(fd: i32, level: i32, name: i32, value: libc::timeval) -> io::Result<()> {
+    let result = unsafe {
+        libc::setsockopt(
+            fd,
+            level,
+            name,
+            (&raw const value).cast(),
+            std::mem::size_of::<libc::timeval>() as libc::socklen_t,
+        )
+    };
+    if result < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 /// 设置一个 `c_int` 类型的套接字选项。
@@ -935,6 +980,34 @@ fn build_syn_packet(
     packet
 }
 
+/// 构造 IPv4 套接字地址。
+///
+/// 各平台 `sockaddr_in` 的字段类型并不一致（macOS 有 `sin_len` 且 `sin_family` 为 `u8`），
+/// 因此先整体清零再逐字段赋值，避免平台相关的结构体字面量差异。
+///
+/// # 参数
+///
+/// * `ip` - 目标 IPv4 地址。
+/// * `port` - 端口，主机字节序。
+///
+/// # 返回
+///
+/// * `libc::sockaddr_in` - 网络字节序的套接字地址。
+fn socket_address(ip: Ipv4Addr, port: u16) -> libc::sockaddr_in {
+    let mut address: libc::sockaddr_in = unsafe { std::mem::zeroed() };
+    // BSD 系（macOS）的结构体带 `sin_len`，按约定填成结构体长度。
+    #[cfg(target_os = "macos")]
+    {
+        address.sin_len = std::mem::size_of::<libc::sockaddr_in>() as u8;
+    }
+    address.sin_family = libc::AF_INET as libc::sa_family_t;
+    address.sin_port = port.to_be();
+    address.sin_addr = libc::in_addr {
+        s_addr: u32::from(ip).to_be(),
+    };
+    address
+}
+
 /// 批量发送器：预先算好 IP 首部与伪首部校验和，逐包只填变化字段。
 ///
 /// # 字段
@@ -1028,14 +1101,7 @@ impl BatchSender {
                 })
                 .collect(),
             #[cfg(target_os = "linux")]
-            address: libc::sockaddr_in {
-                sin_family: libc::AF_INET as u16,
-                sin_port: 0,
-                sin_addr: libc::in_addr {
-                    s_addr: u32::from(destination).to_be(),
-                },
-                sin_zero: [0; 8],
-            },
+            address: socket_address(destination, 0),
             #[cfg(not(target_os = "linux"))]
             destination,
         }
@@ -1296,14 +1362,7 @@ fn send_with_retry(socket: &OwnedFd, packet: &[u8], destination: SocketAddrV4) {
 /// * `Err(io::Error)` - 系统调用失败。
 #[cfg_attr(target_os = "linux", allow(dead_code))]
 fn send_packet(socket: &OwnedFd, packet: &[u8], destination: SocketAddrV4) -> io::Result<()> {
-    let address = libc::sockaddr_in {
-        sin_family: libc::AF_INET as u16,
-        sin_port: destination.port().to_be(),
-        sin_addr: libc::in_addr {
-            s_addr: u32::from(*destination.ip()).to_be(),
-        },
-        sin_zero: [0; 8],
-    };
+    let address = socket_address(*destination.ip(), destination.port());
     let sent = unsafe {
         libc::sendto(
             socket.as_raw_fd(),

@@ -19,7 +19,9 @@
 
 ### 修复
 
-- 修复接收线程在 `SO_RCVTIMEO` 上整段睡眠、首个回包被推迟约 100 ms 的问题（改为 `poll` 等待可读）
+- 修复接收线程在 `SO_RCVTIMEO` 上整段睡眠、首个回包被推迟约 100 ms 的问题（Linux 改为 `poll` + `recvmmsg(MSG_DONTWAIT)`）
+- 修复 macOS / BSD 构建失败：`sockaddr_in` 的 `sin_len` 与 `sin_family` 字段类型与 Linux 不同，改为清零后逐字段赋值
+- 非 Linux 平台恢复接收线程的 `SO_RCVTIMEO`，保证阻塞 `recv` 能周期性检查取消标志
 
 ### 性能
 
