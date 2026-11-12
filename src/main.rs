@@ -364,16 +364,18 @@ async fn run(cli: Cli) -> Result<RunOutcome> {
         let output_cancel = cancel.clone();
         let output = async {
             let mut result: Result<()> = Ok(());
-            while let Some(record) = receiver.recv().await {
-                if record.open || cli.show_closed {
-                    if let Err(error) = writer.write(&record) {
-                        // 写入失败：立即取消扫描，避免继续做无用功。
-                        result = Err(error);
-                        output_cancel.cancel();
-                        break;
+            'batches: while let Some(batch) = receiver.recv().await {
+                for record in batch {
+                    if record.open || cli.show_closed {
+                        if let Err(error) = writer.write(&record) {
+                            // 写入失败：立即取消扫描，避免继续做无用功。
+                            result = Err(error);
+                            output_cancel.cancel();
+                            break 'batches;
+                        }
+                    } else {
+                        writer.record_hidden(&record);
                     }
-                } else {
-                    writer.record_hidden(&record);
                 }
             }
             // 排空通道，让扫描侧不会阻塞在已无人消费的发送上。

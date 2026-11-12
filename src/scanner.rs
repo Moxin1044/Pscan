@@ -313,8 +313,8 @@ pub async fn scan_with_cancel(
     let scan = scan_to_channel_with_cancel(targets, ports, config, sender, cancel);
     let collect = async move {
         let mut results = Vec::new();
-        while let Some(result) = receiver.recv().await {
-            results.push(result);
+        while let Some(batch) = receiver.recv().await {
+            results.extend(batch);
         }
         results
     };
@@ -332,7 +332,7 @@ pub async fn scan_to_channel(
     targets: &[String],
     ports: &[u16],
     config: &ScanConfig,
-    sender: mpsc::Sender<ScanResult>,
+    sender: mpsc::Sender<Vec<ScanResult>>,
 ) {
     scan_to_channel_with_cancel(targets, ports, config, sender, CancellationToken::new()).await;
 }
@@ -353,7 +353,7 @@ pub async fn scan_to_channel_with_cancel(
     targets: &[String],
     ports: &[u16],
     config: &ScanConfig,
-    sender: mpsc::Sender<ScanResult>,
+    sender: mpsc::Sender<Vec<ScanResult>>,
     cancel: CancellationToken,
 ) {
     let (resolved, _failures) = resolve_targets(targets, config.connect_timeout, &cancel).await;
@@ -379,7 +379,7 @@ pub(crate) async fn scan_connect_resolved(
     resolved: Vec<ResolvedTarget>,
     ports: &[u16],
     config: &ScanConfig,
-    sender: mpsc::Sender<ScanResult>,
+    sender: mpsc::Sender<Vec<ScanResult>>,
     cancel: CancellationToken,
 ) {
     let pacer = config
@@ -416,7 +416,7 @@ pub(crate) async fn scan_connect_resolved(
                 };
                 if let Some(result) = result {
                     // 消费者退出（写入失败）时发送会失败，此处静默丢弃即可。
-                    let _ = sender.send(result).await;
+                    let _ = sender.send(vec![result]).await;
                 }
             }
         })

@@ -33,7 +33,7 @@
 ```bash
 # 选一个平台组合，例如 Linux x86_64 musl：
 TARGET=x86_64-unknown-linux-musl
-VERSION=v2.3.0
+VERSION=v2.3.1
 
 # 下载并校验
 curl -LO "https://github.com/Moxin1044/Pscan/releases/download/${VERSION}/pscan-${VERSION}-${TARGET}.tar.gz"
@@ -61,7 +61,7 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 ### Windows
 
 ```powershell
-$VERSION = "v2.3.0"
+$VERSION = "v2.3.1"
 $TARGET  = "x86_64-pc-windows-msvc"
 $ZIP     = "pscan-$VERSION-$TARGET.zip"
 
@@ -232,8 +232,9 @@ UDP 服务名基于端口映射，不复用 TCP banner 指纹。
 `--syn` 走原始套接字，不完成三次握手：
 
 1. 用 `socket(AF_INET, SOCK_RAW, IPPROTO_TCP)` + `IP_HDRINCL` 自行构造 40 字节包（20 字节 IPv4 头 + 20 字节 TCP 头），源端口在 40000–60000 内选取
-2. 接收线程阻塞读取所有 TCP 回包，按「目标 IP + 目标端口 + 序列号」匹配在途探针
-3. `SYN-ACK` 且 `ack == 本端 seq + 1` → `open`；`RST` → `closed`；到期无响应 → `filtered`（计入 Summary 的 `uncertain`）
+2. 发送侧用 `sendmmsg` 批量提交（每批最多 256 条），TCP 校验和按伪首部预计算、只对变化字段求和
+3. 接收线程用 `poll` + `recvmmsg`（`MSG_DONTWAIT`）批量取回所有 TCP 回包，按「目标 IP + 目标端口 + 序列号」匹配在途探针；探针槽位按端口号下标复用，增删均为 O(1)
+4. `SYN-ACK` 且 `ack == 本端 seq + 1` → `open`；`RST` → `closed`；到期无响应 → `filtered`（计入 Summary 的 `uncertain`）；结果按批送回主线程，避免每个端口一次唤醒
 
 权限：需要 root，或给二进制加 `CAP_NET_RAW`：
 
@@ -250,7 +251,7 @@ pscan -t 192.0.2.10 -p 1-65535 --syn
 - 不建立连接，因此不能与 `-s` 同时使用，也不能与 `--udp` 同时使用
 - 每个探针只发送一次、不重传；链路丢包或本机接收缓冲不足时，`open` / `closed` 可能被误判为 `filtered`，此时降低 `-c` 或提高 `--timeout-ms`
 
-性能（本机回环，65,535 端口）：`--syn -c 2048` 约 0.57 s，同参数 connect 扫描约 1.8 s；20,000 端口约 0.22 s（约 9 万包/秒）。
+性能（本机回环，65,535 端口）：`--syn -c 512` 约 0.31–0.34 s（约 20 万探针/秒），同范围 connect 扫描约 0.71–0.78 s；10,000 端口约 0.06 s。真实网络下吞吐主要由 `-c`、`--timeout-ms` 与链路 RTT 决定。
 
 ## 主机发现
 
