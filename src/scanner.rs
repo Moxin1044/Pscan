@@ -25,6 +25,7 @@ use tokio::time::{sleep_until, timeout};
 pub use tokio_util::sync::CancellationToken;
 
 use crate::fingerprint::{self, Fingerprint};
+use crate::tls::{self, TlsInfo};
 
 /// 单次连接最多保留的 banner 字节数，防止恶意服务无限输出撑爆内存。
 const MAX_BANNER_BYTES: usize = 2048;
@@ -37,6 +38,9 @@ const BANNER_INITIAL_CAPACITY: usize = 512;
 
 /// 被动 banner 的最长等待时间；服务不主动说话时不值得久等。
 const PASSIVE_WAIT: Duration = Duration::from_millis(180);
+
+/// 主动探针的等待窗口：发完探针后最多等这么久，拿到数据立即返回。
+const PROBE_WAIT: Duration = Duration::from_millis(250);
 
 /// 目标预解析的最大并发数，避免一次性对 DNS 服务器发起上百个查询。
 const RESOLVE_CONCURRENCY_MAX: usize = 64;
@@ -745,13 +749,20 @@ async fn discover_one(
 
 /// 在已建立的 TCP 连接上做服务指纹识别。
 ///
-/// 流程：先读被动 banner；若未识别或判定为 HTTP 候选，补发一次只读
-/// `HEAD /`；仍未识别则回退到端口表。所有读写共享同一个 deadline。
+/// 策略按端口分流，避免把预算浪费在「对端根本不会说话」的场景上：
+///
+/// - **TLS 端口**：直接握手，采集版本 / 套件 / ALPN / 证书 CN，成功后
+///   再补一次 `HEAD /`；握手失败说明并非 TLS，退回通用流程。
+/// - **明文 HTTP 端口**：跳过被动等待，直接发 `HEAD /`。
+/// - **其余端口**：先等 [`PASSIVE_WAIT`] 的被动 banner；识别不出时再用
+///   [`PROBE_WAIT`] 的短窗口补一次 HTTP 探针。
+///
+/// 任何一次读取只要拿到数据就立即返回，不会等满整个预算。
 ///
 /// # 参数
 ///
 /// * `socket` - 已连通的 TCP 流。
-/// * `host` - 原始主机名，用于 `Host:` 头（保持虚拟主机语义）。
+/// * `host` - 原始主机名，用于 `Host:` 头与 TLS `SNI`。
 /// * `port` - 目标端口。
 /// * `fingerprint_timeout` - 本次识别的总预算。
 ///
@@ -764,50 +775,121 @@ async fn fingerprint_stream(
     port: u16,
     fingerprint_timeout: Duration,
 ) -> (Fingerprint, Option<String>) {
+    if fingerprint::is_tls_port(port) {
+        if let Some(info) = tls::probe(
+            socket,
+            host,
+            fingerprint_timeout,
+            fingerprint::is_https_port(port),
+        )
+        .await
+        {
+            return tls_fingerprint(&info, port);
+        }
+        // 握手失败后连接里已经有半截 handshake 数据，继续探测没有意义；
+        // 直接退回端口表，保证总耗时不超过 `fingerprint_timeout`。
+        return (fingerprint::port_fallback(port), None);
+    }
+
     let deadline = tokio::time::Instant::now() + fingerprint_timeout;
+    let passive_wait = if fingerprint::is_http_port(port) {
+        Duration::ZERO
+    } else {
+        PASSIVE_WAIT.min(fingerprint_timeout)
+    };
     let mut banner = Vec::with_capacity(BANNER_INITIAL_CAPACITY);
-    read_banner(socket, &mut banner, PASSIVE_WAIT.min(fingerprint_timeout)).await;
+    read_banner(socket, &mut banner, passive_wait).await;
     let mut result = fingerprint::identify(port, &banner);
 
-    let http_candidate = matches!(result.service.as_deref(), None | Some("http" | "https"));
-    if http_candidate && (!result.is_identified() || result.product.is_none()) {
-        let request = HTTP_PROBE_TEMPLATE.replace("{host}", host);
-        if let Some(remaining) = deadline.checked_duration_since(tokio::time::Instant::now())
-            && let Ok(Ok(())) = timeout(remaining, socket.write_all(request.as_bytes())).await
-        {
-            read_until_deadline(socket, &mut banner, deadline).await;
-            let probed = fingerprint::identify(port, &banner);
-            // 只接受 HTTP 系结论，避免把非 HTTP 服务的回显误当成 HTTP。
-            if matches!(probed.service.as_deref(), Some("http" | "https")) {
-                result = probed;
-            }
-        }
+    if !result.is_complete()
+        && matches!(result.service.as_deref(), None | Some("http" | "https"))
+        && let Some(probed) = probe_http(socket, host, &mut banner, deadline).await
+    {
+        result = probed;
     }
 
     if !result.is_identified() {
         result = fingerprint::port_fallback(port);
     }
-
     let banner = (!banner.is_empty()).then(|| sanitize_banner(&banner));
     (result, banner)
 }
 
-/// 在 deadline 之前继续读取 banner。
+/// 补发一次明文 `HEAD /`，把响应头解析成指纹。
 ///
 /// # 参数
 ///
-/// * `socket` - TCP 流。
-/// * `banner` - 累计缓冲区。
-/// * `deadline` - 绝对截止时刻；已过期则不读取。
-async fn read_until_deadline(
+/// * `socket` - 已连通的 TCP 流。
+/// * `host` - 原始主机名，用于 `Host:` 头。
+/// * `banner` - 累计缓冲区，探针响应会追加到这里。
+/// * `deadline` - 本次识别的绝对截止时刻。
+///
+/// # 返回
+///
+/// * `Some(Fingerprint)` - 响应里确实出现了 `HTTP/` 状态行。
+/// * `None` - 写入或读取失败、超时，或响应不是 HTTP。
+async fn probe_http(
     socket: &mut TcpStream,
+    host: &str,
     banner: &mut Vec<u8>,
     deadline: tokio::time::Instant,
-) {
-    let Some(remaining) = deadline.checked_duration_since(tokio::time::Instant::now()) else {
-        return;
-    };
-    read_banner(socket, banner, remaining).await;
+) -> Option<Fingerprint> {
+    let remaining = deadline.checked_duration_since(tokio::time::Instant::now())?;
+    let wait = remaining.min(PROBE_WAIT);
+    let request = HTTP_PROBE_TEMPLATE.replace("{host}", host);
+    if timeout(wait, socket.write_all(request.as_bytes()))
+        .await
+        .ok()?
+        .is_err()
+    {
+        return None;
+    }
+
+    let before = banner.len();
+    read_banner(socket, banner, wait).await;
+    if banner.len() == before {
+        return None;
+    }
+    let text = String::from_utf8_lossy(banner);
+    let offset = text.to_ascii_lowercase().find("http/")?;
+    Some(fingerprint::identify_http(&text[offset..], false))
+}
+
+/// 把 TLS 采集结果映射为扫描指纹与 banner。
+///
+/// 优先采用握手后 HTTP 响应里的产品 / 版本（如 `nginx 1.25.3`）；没有
+/// HTTP 响应时退回端口表给出的服务名，版本取协商出的 TLS 版本。
+///
+/// # 参数
+///
+/// * `info` - TLS 握手采集结果。
+/// * `port` - 目标端口，用于端口表回退。
+///
+/// # 返回
+///
+/// * `(Fingerprint, Option<String>)` - 指纹与单行 TLS 摘要。
+fn tls_fingerprint(info: &TlsInfo, port: u16) -> (Fingerprint, Option<String>) {
+    let http = info.http.clone().filter(|found| found.product.is_some());
+    let service = http
+        .as_ref()
+        .and_then(|found| found.service.clone())
+        .or_else(|| fingerprint::service_for_port(port).map(str::to_string))
+        .or_else(|| Some("tls".to_string()));
+    let product = http.as_ref().and_then(|found| found.product.clone());
+    let version = http
+        .as_ref()
+        .and_then(|found| found.version.clone())
+        .or_else(|| info.version.clone());
+    let summary = info.summary();
+    let banner = (!summary.is_empty()).then(|| sanitize_banner(summary.as_bytes()));
+    (
+        Fingerprint {
+            service,
+            product,
+            version,
+        },
+        banner,
+    )
 }
 
 /// 读取一次 banner，受等待时间与全局上限双重约束。

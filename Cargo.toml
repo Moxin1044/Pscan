@@ -17,6 +17,7 @@ self_update = { version = "1.0.0-rc.6", default-features = false, features = ["g
 surge-ping = "0.9"
 thiserror = "2.0"
 tokio = { version = "1.47", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-rustls = { version = "0.26", features = ["aws_lc_rs", "tls12"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 
 [target.'cfg(unix)'.dependencies]

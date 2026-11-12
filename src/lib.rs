@@ -9,6 +9,7 @@
 //! | [`target`] | 目标表达式解析与展开（域名、IP、CIDR、IP 范围、文件） |
 //! | [`scanner`] | DNS 解析、TCP/UDP 扫描、主机发现、限速、取消、背压 |
 //! | [`fingerprint`] | 基于 banner 与端口表的服务 / 产品 / 版本识别 |
+//! | [`tls`] | TLS 握手指纹（版本、套件、ALPN、证书 CN、HTTPS 产品） |
 //! | [`output`] | 终端文本与 JSONL 流式输出 |
 //! | [`updater`] | 基于 GitHub Releases 的自更新 |
 //!
@@ -28,6 +29,7 @@ pub mod output;
 pub mod ports;
 pub mod scanner;
 pub mod target;
+pub mod tls;
 pub mod updater;
 
 use thiserror::Error;

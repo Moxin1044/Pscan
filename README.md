@@ -86,7 +86,8 @@ cargo build --release --locked
 - **端口**：单端口、闭区间范围、组合表达式
 - **协议**：TCP connect、UDP 无连接
 - **主机发现**：ICMP Echo（Linux 无特权亦可用），失败时 TCP connect 回退
-- **指纹**：SSH、HTTP、MySQL、Redis、SMTP、FTP、POP3、IMAP、PostgreSQL 等
+- **指纹**：SSH、HTTP、MySQL、Redis、SMTP、FTP、POP3、IMAP、PostgreSQL、VNC、AMQP 等；TLS 端口额外做握手，采集版本、套件、ALPN 与证书 CN
+- **端口表**：内置 129 个常见端口的人类可读服务名，按端口二分查找
 - **并发**：有界 Tokio 任务、结果通道背压
 - **限速**：全局每秒任务启动上限
 - **超时**：DNS、连接、指纹三段独立可调
@@ -228,15 +229,20 @@ UDP 服务名基于端口映射，不复用 TCP banner 指纹。
 
 ## 服务指纹
 
-启用 `-s / --service-detection` 时：
+启用 `-s / --service-detection` 时，按端口类型分流，避免把时间预算浪费在「对端不会说话」的场景上：
 
-1. 短时间读取被动 banner，识别 SSH、MySQL、HTTP、Redis、SMTP、FTP、POP3、IMAP、PostgreSQL 等常见协议
-2. 如仍未识别且服务是 HTTP 候选（未知或已判为 `http`/`https`），发送只读 `HEAD / HTTP/1.0` 探针
-3. 仍无法确认时，使用端口映射作为低置信度回退
+1. **TLS 端口**（443、465、636、853、993、995、8443 等）：直接完成 TLS 握手，采集协商版本、加密套件、ALPN 与证书 CN；HTTPS 端口或 ALPN 协商出 `http/*` 时再补一个 `HEAD /`，从响应头取产品与版本
+2. **明文 HTTP 端口**（80、8080、8000 等）：跳过被动等待，直接发送 `HEAD /`
+3. **其余端口**：先等 180 ms 的被动 banner，识别 SSH、MySQL、Redis、SMTP、FTP、VNC、AMQP 等；仍未识别且是 HTTP 候选时，再用 250 ms 的短窗口补一次探针
+4. 仍无法确认时，使用端口映射作为低置信度回退
 
-**不会**对 SSH、SMTP、Redis 等已识别的非 HTTP 协议发送 HTTP 探针。指纹总预算受 `--fingerprint-timeout-ms` 约束，`write_all` 与 `read` 共享同一 deadline。
+任何一次读取只要拿到数据就立即返回。指纹总预算受 `--fingerprint-timeout-ms` 约束（默认 800 ms），TLS 握手、`write_all` 与 `read` 共享同一 deadline；TLS 握手失败时直接回退端口名，不再消耗剩余预算。
 
-TLS 服务当前只按端口回退为 `https`，不执行 TLS 握手或证书解析。`--service-detection` 与 `--udp` 互斥。
+**不会**向已识别的非 HTTP 协议（SSH、SMTP、Redis、IMAP 等）发送 HTTP 探针；TLS 端口也只在确认是 HTTPS 时才补发 HTTP 请求。
+
+实测（本机回环，静默端口，`-s`）：未知端口 433 ms、HTTP 端口 251 ms，均低于改造前固定 800 ms 的等待。
+
+`--service-detection` 与 `--udp` 互斥。
 
 ## 取消
 
@@ -285,6 +291,7 @@ cargo build --release --locked
 - 目标 / 端口解析、CIDR 边界（`/31`、`/32`、IPv6 `/128`）、目标上限
 - CLI 边界与安全（`--help`、零并发拒绝）
 - TCP 扫描、SSH / HTTP / MySQL 指纹、非标准端口主动识别、限速节流
+- 端口表有序性与二分查找、协议端口集合、VNC banner 解析、TLS 证书 CN 解析（含逐字节截断不 panic）
 - UDP `open` / `closed` / `open|filtered`
 - ICMP + TCP 主机发现、`--ping` / `--ping-only`
 - 真实 SIGINT 退出码与 JSONL 完整性
@@ -331,7 +338,8 @@ git push origin master v2.0.1
 | `src/target.rs` | 目标文件、主机名、IP、CIDR、IP 范围解析 |
 | `src/ports.rs` | 端口 / 范围解析 |
 | `src/scanner.rs` | DNS、TCP/UDP 扫描、主机发现、取消、限速、背压 |
-| `src/fingerprint.rs` | TCP 协议 / 产品 / 版本识别 |
+| `src/fingerprint.rs` | 端口表、协议 / 产品 / 版本识别、协议端口集合 |
+| `src/tls.rs` | TLS 握手指纹：版本、套件、ALPN、证书 CN、HTTPS 产品 |
 | `src/output.rs` | text / JSONL 流式输出 |
 | `src/main.rs` | Clap CLI、信号处理、结果消费 |
 | `.github/workflows/ci.yml` | fmt / clippy / 三平台测试 / release 构建校验 |
@@ -341,7 +349,9 @@ git push origin master v2.0.1
 
 - DNS 目标在启动扫描前批量解析完；`--max-hosts` 只约束目标展开，A/AAAA 展开在此之外
 - 限速采用截止时间调度，长时间调度停顿后可能出现追赶脉冲
-- TLS 未做握手 / 证书解析
+- TLS 握手只取对端证书的 CN 与颁发者名称，不做证书链校验、有效期校验或 SAN 匹配——用途是识别服务，不是评估安全性
+- 只有在 `fingerprint` 模块的 TLS 端口表内的端口才会尝试握手；监听在自定义端口的 TLS 服务只能拿到端口名回退
+- 证书 CN 解析是手写的极小 DER 解析器，遇到非常规编码（例如多值 RDN）会退化为空值，不影响扫描结果
 - IPv6 CIDR 展开可能非常大，请配合 `--max-hosts` 使用
 
 ## 许可证
