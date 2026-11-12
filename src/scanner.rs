@@ -61,6 +61,21 @@ const UDP_NTP_PROBE: &[u8] = b"\x1b\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\
 /// 主动 HTTP 探针模板；`Host` 与 `User-Agent` 用于让虚拟主机返回真实响应。
 const HTTP_PROBE_TEMPLATE: &str = "HEAD / HTTP/1.0\r\nHost: {host}\r\nUser-Agent: Pscan/2\r\n\r\n";
 
+/// SYN 扫描下 TCP 端口的判定状态。
+///
+/// connect 扫描只能得到「连上 / 没连上」，而半开扫描还能区分
+/// 「响应 RST（关闭）」与「完全没有响应（被过滤或丢包）」。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TcpState {
+    /// 收到 `SYN-ACK`。
+    Open,
+    /// 收到 `RST`。
+    Closed,
+    /// 超时无响应：可能被防火墙丢弃，也可能是链路丢包。
+    Filtered,
+}
+
 /// 传输层协议。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -102,6 +117,11 @@ pub struct ScanConfig {
     pub result_buffer: usize,
     /// 传输层选择。
     pub transport: Transport,
+    /// 是否使用 SYN 半开扫描（仅 TCP，仅 Unix）。
+    ///
+    /// 为 `true` 时会忽略 `service_detection`：半开扫描不建立连接，
+    /// 没有 banner 可读。命令行在参数校验阶段已拒绝这种组合。
+    pub syn: bool,
 }
 
 /// 单次端口扫描结果，逐条序列化为 JSONL。
@@ -124,6 +144,9 @@ pub struct ScanResult {
     /// UDP 状态，仅 UDP 结果有值。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub udp_state: Option<UdpState>,
+    /// SYN 扫描的 TCP 状态，仅 `--syn` 的结果有值。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tcp_state: Option<TcpState>,
     /// 识别出的服务名。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service: Option<String>,
@@ -196,7 +219,7 @@ pub struct ResolvedTarget {
 /// 从而把任务启动时间均匀摊开。`next` 用 [`Mutex`] 保护，只在取号时
 /// 短暂持锁，不会覆盖真正的网络等待。
 #[derive(Debug)]
-struct RatePacer {
+pub(crate) struct RatePacer {
     /// 相邻两次任务启动的间隔。
     interval: Duration,
     /// 下一个允许启动的时刻。
@@ -218,7 +241,7 @@ impl RatePacer {
     ///
     /// `rate` 为 0 时 `1.0 / 0.0` 得到正无穷，间隔为 `Duration::MAX`，
     /// 因此调用方必须先过滤 `rate == 0`；本函数不做该检查。
-    fn new(rate: u32) -> Self {
+    pub(crate) fn new(rate: u32) -> Self {
         Self {
             interval: Duration::from_secs_f64(1.0 / f64::from(rate)),
             next: Mutex::new(tokio::time::Instant::now()),
@@ -235,7 +258,7 @@ impl RatePacer {
     ///
     /// * `true` - 已到号，可以启动任务。
     /// * `false` - 等待期间被取消，调用方应放弃该任务。
-    async fn wait(&self, cancel: &CancellationToken) -> bool {
+    pub(crate) async fn wait(&self, cancel: &CancellationToken) -> bool {
         let mut next = self.next.lock().await;
         let now = tokio::time::Instant::now();
         if *next > now {
@@ -334,6 +357,31 @@ pub async fn scan_to_channel_with_cancel(
     cancel: CancellationToken,
 ) {
     let (resolved, _failures) = resolve_targets(targets, config.connect_timeout, &cancel).await;
+    #[cfg(unix)]
+    if config.syn {
+        crate::syn::scan_to_channel_with_cancel(resolved, ports, config, sender, cancel).await;
+        return;
+    }
+    // 非 Unix 平台没有原始套接字；保守退回 connect 扫描，结果字段保持一致。
+    scan_connect_resolved(resolved, ports, config, sender, cancel).await;
+}
+
+/// 对已解析目标执行 connect / UDP 扫描。
+///
+/// # 参数
+///
+/// * `resolved` - 已解析的目标列表。
+/// * `ports` - 端口列表。
+/// * `config` - 扫描配置。
+/// * `sender` - 结果通道发送端。
+/// * `cancel` - 取消令牌。
+pub(crate) async fn scan_connect_resolved(
+    resolved: Vec<ResolvedTarget>,
+    ports: &[u16],
+    config: &ScanConfig,
+    sender: mpsc::Sender<ScanResult>,
+    cancel: CancellationToken,
+) {
     let pacer = config
         .rate_limit
         .filter(|rate| *rate > 0)
@@ -549,6 +597,7 @@ async fn scan_tcp(
                 latency_ms: elapsed_millis(started),
                 transport: Transport::Tcp,
                 udp_state: None,
+                tcp_state: None,
                 service: fingerprint.service,
                 product: fingerprint.product,
                 version: fingerprint.version,
@@ -959,6 +1008,7 @@ fn udp_result(
         latency_ms: elapsed_millis(started),
         transport: Transport::Udp,
         udp_state: Some(state),
+        tcp_state: None,
         service,
         product: None,
         version: None,
@@ -989,6 +1039,7 @@ fn closed_tcp(target: ResolvedTarget, port: u16, started: Instant, error: String
         latency_ms: elapsed_millis(started),
         transport: Transport::Tcp,
         udp_state: None,
+        tcp_state: None,
         service: None,
         product: None,
         version: None,
@@ -1091,6 +1142,6 @@ fn duration_millis(duration: Duration) -> u64 {
 /// # 返回
 ///
 /// * `u64` - 经过的毫秒数。
-fn elapsed_millis(started: Instant) -> u64 {
+pub(crate) fn elapsed_millis(started: Instant) -> u64 {
     duration_millis(started.elapsed())
 }

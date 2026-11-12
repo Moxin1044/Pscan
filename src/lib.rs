@@ -10,6 +10,7 @@
 //! | [`scanner`] | DNS 解析、TCP/UDP 扫描、主机发现、限速、取消、背压 |
 //! | [`fingerprint`] | 基于 banner 与端口表的服务 / 产品 / 版本识别 |
 //! | [`tls`] | TLS 握手指纹（版本、套件、ALPN、证书 CN、HTTPS 产品） |
+//! | [`syn`] | TCP SYN 半开扫描（原始套接字，需要 CAP_NET_RAW） |
 //! | [`output`] | 终端文本与 JSONL 流式输出 |
 //! | [`updater`] | 基于 GitHub Releases 的自更新 |
 //!
@@ -28,6 +29,8 @@ pub mod fingerprint;
 pub mod output;
 pub mod ports;
 pub mod scanner;
+#[cfg(unix)]
+pub mod syn;
 pub mod target;
 pub mod tls;
 pub mod updater;

@@ -16,7 +16,7 @@ use std::path::Path;
 use clap::ValueEnum;
 
 use crate::Result;
-use crate::scanner::{HostDiscoveryResult, HostState, ScanResult, Transport, UdpState};
+use crate::scanner::{HostDiscoveryResult, HostState, ScanResult, TcpState, Transport, UdpState};
 
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
@@ -385,6 +385,14 @@ impl ResultWriter {
         if result.error.is_some() && !is_expected_closed(result) {
             self.summary.errors += 1;
         }
+        if let Some(state) = result.tcp_state {
+            match state {
+                TcpState::Open => self.summary.open += 1,
+                TcpState::Closed => self.summary.closed += 1,
+                TcpState::Filtered => self.summary.uncertain += 1,
+            }
+            return;
+        }
         match result.udp_state {
             Some(UdpState::Open) => self.summary.open += 1,
             Some(UdpState::Closed) => self.summary.closed += 1,
@@ -444,6 +452,13 @@ impl ResultWriter {
 ///
 /// * `(&'static str, &'static str, &'static str)` - 状态名、标记、颜色。
 fn scan_state(result: &ScanResult) -> (&'static str, &'static str, &'static str) {
+    if let Some(state) = result.tcp_state {
+        return match state {
+            TcpState::Open => ("open", "+", GREEN),
+            TcpState::Closed => ("closed", "-", DIM),
+            TcpState::Filtered => ("filtered", "?", YELLOW),
+        };
+    }
     match result.udp_state {
         Some(UdpState::Open) => ("open", "+", GREEN),
         Some(UdpState::Closed) => ("closed", "-", DIM),

@@ -23,6 +23,7 @@ fn text_output_preserves_closed_state_and_error() {
             error: Some("connection refused".into()),
             transport: Transport::Tcp,
             udp_state: None,
+            tcp_state: None,
         })
         .unwrap();
     writer.flush().unwrap();
@@ -54,6 +55,7 @@ fn text_output_brackets_ipv6_addresses() {
             error: None,
             transport: Transport::Tcp,
             udp_state: None,
+            tcp_state: None,
         })
         .unwrap();
     writer.flush().unwrap();
@@ -123,5 +125,6 @@ fn scan_result(open: bool, udp_state: Option<UdpState>) -> ScanResult {
             Transport::Tcp
         },
         udp_state,
+        tcp_state: None,
     }
 }

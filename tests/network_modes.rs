@@ -15,6 +15,7 @@ fn scan_config() -> ScanConfig {
         rate_limit: None,
         result_buffer: 16,
         transport: Transport::Tcp,
+        syn: false,
     }
 }
 

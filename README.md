@@ -84,7 +84,7 @@ cargo build --release --locked
 
 - **目标**：IPv4、IPv6、主机名、CIDR、IP 范围、逗号表达式、文件输入
 - **端口**：单端口、闭区间范围、组合表达式
-- **协议**：TCP connect、UDP 无连接
+- **协议**：TCP connect、UDP 无连接、SYN 半开扫描
 - **主机发现**：ICMP Echo（Linux 无特权亦可用），失败时 TCP connect 回退
 - **指纹**：SSH、HTTP、MySQL、Redis、SMTP、FTP、POP3、IMAP、PostgreSQL、VNC、AMQP 等；TLS 端口额外做握手，采集版本、套件、ALPN 与证书 CN
 - **端口表**：内置 129 个常见端口的人类可读服务名，按端口二分查找
@@ -105,6 +105,9 @@ pscan -t 192.0.2.0/30 -p 22,80,443 -s --format jsonl
 
 # UDP：显式指定端口并显示 closed / open|filtered
 pscan -t 192.0.2.10 -p 53,123,161 --udp --show-closed
+
+# SYN 半开扫描：不建连，适合大端口段；需要 root 或 CAP_NET_RAW
+sudo pscan -t 192.0.2.10 -p 1-65535 --syn --show-closed
 
 # 先做主机发现，仅扫描存活主机的 TCP 端口
 pscan -t 192.0.2.0/24 --ping --ping-ports 80,443,22 -p 22,80,443
@@ -132,6 +135,7 @@ pscan -f targets.txt -p 1-65535 --rate 500 --format jsonl -o scan.jsonl
 | 参数 | 说明 |
 |---|---|
 | `-U, --udp` | UDP 扫描（默认 TCP） |
+| `--syn` | SYN 半开扫描：原始套接字发 SYN，按 SYN-ACK / RST / 超时判定 open / closed / filtered；需 root 或 `CAP_NET_RAW`，与 `--udp`、`-s` 互斥 |
 | `--ping` | 先做主机发现，仅扫描存活主机 |
 | `--ping-only` | 只做主机发现，不扫描端口 |
 | `--ping-ports <PORTS>` | ICMP 无响应时的 TCP 回退端口，默认 `80,443,22` |
@@ -201,6 +205,8 @@ JSONL：
 {"kind":"scan","host":"127.0.0.1","ip":"127.0.0.1","port":22,"open":true,"latency_ms":0,"transport":"tcp","service":"ssh","product":"OpenSSH","version":"9.9p1"}
 ```
 
+`--syn` 下文本状态还会出现 `? filtered`（计入 Summary 的 `uncertain`），JSONL 额外带 `"tcp_state":"open" | "closed" | "filtered"`；connect 扫描不输出该字段。
+
 文本输出按结果到达顺序流式展示，不等待整个扫描结束。交互终端默认使用颜色；重定向、管道和 `-o` 文件默认不写 ANSI 转义，设置 `NO_COLOR` 或 `--color never` 可强制关闭颜色。IPv6 地址在文本输出中会加方括号。JSONL 的字段和逐行结构不受终端展示优化影响。
 
 ## UDP 状态
@@ -220,6 +226,31 @@ UDP 无连接、远端可能静默，Pscan 保守区分三种状态：
 - 其他端口：短 `Pscan` 数据报
 
 UDP 服务名基于端口映射，不复用 TCP banner 指纹。
+
+## SYN 扫描
+
+`--syn` 走原始套接字，不完成三次握手：
+
+1. 用 `socket(AF_INET, SOCK_RAW, IPPROTO_TCP)` + `IP_HDRINCL` 自行构造 40 字节包（20 字节 IPv4 头 + 20 字节 TCP 头），源端口在 40000–60000 内选取
+2. 接收线程阻塞读取所有 TCP 回包，按「目标 IP + 目标端口 + 序列号」匹配在途探针
+3. `SYN-ACK` 且 `ack == 本端 seq + 1` → `open`；`RST` → `closed`；到期无响应 → `filtered`（计入 Summary 的 `uncertain`）
+
+权限：需要 root，或给二进制加 `CAP_NET_RAW`：
+
+```bash
+sudo setcap cap_net_raw+ep ./pscan
+pscan -t 192.0.2.10 -p 1-65535 --syn
+```
+
+没有权限时启动即报错退出（退出码 `1`），不会静默回退到 connect 扫描。
+
+限制与取舍：
+
+- 只支持 IPv4；IPv6 目标自动回退到 connect 扫描
+- 不建立连接，因此不能与 `-s` 同时使用，也不能与 `--udp` 同时使用
+- 每个探针只发送一次、不重传；链路丢包或本机接收缓冲不足时，`open` / `closed` 可能被误判为 `filtered`，此时降低 `-c` 或提高 `--timeout-ms`
+
+性能（本机回环，65,535 端口）：`--syn -c 2048` 约 0.57 s，同参数 connect 扫描约 1.8 s；20,000 端口约 0.22 s（约 9 万包/秒）。
 
 ## 主机发现
 
@@ -340,6 +371,7 @@ git push origin master v2.0.1
 | `src/scanner.rs` | DNS、TCP/UDP 扫描、主机发现、取消、限速、背压 |
 | `src/fingerprint.rs` | 端口表、协议 / 产品 / 版本识别、协议端口集合 |
 | `src/tls.rs` | TLS 握手指纹：版本、套件、ALPN、证书 CN、HTTPS 产品 |
+| `src/syn.rs` | SYN 半开扫描：构包与校验和、回包匹配、超时判定、权限预检 |
 | `src/output.rs` | text / JSONL 流式输出 |
 | `src/main.rs` | Clap CLI、信号处理、结果消费 |
 | `.github/workflows/ci.yml` | fmt / clippy / 三平台测试 / release 构建校验 |
@@ -352,6 +384,8 @@ git push origin master v2.0.1
 - TLS 握手只取对端证书的 CN 与颁发者名称，不做证书链校验、有效期校验或 SAN 匹配——用途是识别服务，不是评估安全性
 - 只有在 `fingerprint` 模块的 TLS 端口表内的端口才会尝试握手；监听在自定义端口的 TLS 服务只能拿到端口名回退
 - 证书 CN 解析是手写的极小 DER 解析器，遇到非常规编码（例如多值 RDN）会退化为空值，不影响扫描结果
+- `--syn` 每个探针只发送一次且不重传，链路丢包会表现为 `filtered`；对丢包敏感的场景请降低 `--concurrency`
+- `--syn` 仅支持 IPv4，IPv6 目标自动回退到 connect 扫描
 - IPv6 CIDR 展开可能非常大，请配合 `--max-hosts` 使用
 
 ## 许可证

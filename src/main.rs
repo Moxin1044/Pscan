@@ -77,6 +77,10 @@ struct Cli {
     #[arg(short = 'U', long)]
     udp: bool,
 
+    /// Use a TCP SYN half-open scan (Unix only; needs root or CAP_NET_RAW).
+    #[arg(long)]
+    syn: bool,
+
     /// Discover live hosts with ICMP Echo and TCP fallback before port scanning.
     #[arg(long)]
     ping: bool,
@@ -262,6 +266,10 @@ fn run_self_update() -> ExitCode {
 /// * [`PscanError::Json`] - JSONL 序列化失败。
 async fn run(cli: Cli) -> Result<RunOutcome> {
     validate_cli(&cli)?;
+    #[cfg(unix)]
+    if cli.syn {
+        pscan::syn::preflight().map_err(PscanError::InvalidInput)?;
+    }
     let targets = load_targets(
         &cli.targets,
         cli.target_file.as_deref(),
@@ -347,6 +355,7 @@ async fn run(cli: Cli) -> Result<RunOutcome> {
             } else {
                 Transport::Tcp
             },
+            syn: cli.syn,
         };
 
         let (sender, mut receiver) = mpsc::channel(config.result_buffer);
@@ -430,6 +439,16 @@ fn validate_cli(cli: &Cli) -> Result<()> {
     if cli.service_detection && cli.udp {
         return Err(PscanError::InvalidInput(
             "--service-detection currently applies to TCP only".into(),
+        ));
+    }
+    if cli.syn && cli.udp {
+        return Err(PscanError::InvalidInput(
+            "--syn cannot be combined with --udp".into(),
+        ));
+    }
+    if cli.syn && cli.service_detection {
+        return Err(PscanError::InvalidInput(
+            "--syn does not establish connections, so it cannot be combined with --service-detection".into(),
         ));
     }
     Ok(())
