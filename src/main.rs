@@ -23,6 +23,8 @@ use pscan::target::{TargetOptions, load_targets};
 use pscan::{PscanError, Result};
 use tokio::sync::mpsc;
 
+mod trace;
+
 /// 未指定 `--ports` 时的默认扫描范围。
 const DEFAULT_PORTS: &str = "1-1024";
 
@@ -58,12 +60,16 @@ const EXIT_CODE_RESOLUTION_FAILURE: u8 = 2;
 #[command(
     name = "pscan",
     version,
+    args_conflicts_with_subcommands = true,
     about = "High-performance TCP/UDP port scanner with host discovery and service fingerprinting"
 )]
 struct Cli {
     /// Target expression; repeat or comma-separate domains, IPs, CIDRs, and IP ranges.
     #[arg(short = 't', long = "target")]
     targets: Vec<String>,
+
+    #[command(subcommand)]
+    command: Option<trace::Command>,
 
     /// File containing one target expression per line.
     #[arg(short = 'f', long = "target-file")]
@@ -168,6 +174,9 @@ enum RunOutcome {
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
+    if let Some(trace::Command::Trace(args)) = cli.command {
+        return trace::entry(args).await;
+    }
 
     if cli.check_update {
         return run_check_update();

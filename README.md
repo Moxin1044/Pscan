@@ -94,11 +94,21 @@ cargo build --release --locked
 - **取消**：`Ctrl-C` 协作取消并 flush 已完成结果
 - **输出**：带状态颜色、稳定列布局和结束汇总的终端文本；JSONL 流式写出
 
-### 功能边界：主机发现不等于路由跟踪
+### 逐跳路由诊断
 
-当前版本**没有实现逐跳路由跟踪**，没有 `--tracert` 或 `--traceroute` 参数，也不会输出中间路由器或各跳延迟。`--ping` 和 `--ping-only` 只检查目标是否有响应，不会追踪中间路径。
+`pscan trace` 诊断单个 IP 或主机名；`--ping` 和 `--ping-only` 则只检查主机是否响应。
 
-如果要查看到目标的逐跳路径，请使用系统工具：Windows 用 `tracert <目标>`，Linux / macOS 用 `traceroute <目标>`。这些命令不属于 Pscan。
+```bash
+pscan trace 127.0.0.1
+pscan trace ::1 --max-hops 20 --timeout-ms 1000
+pscan trace 127.0.0.1 --rounds 5 --interval-ms 2000 --format jsonl -o trace.jsonl
+pscan trace 127.0.0.1 --rounds 0
+```
+
+- 每轮输出各跳响应地址、RTT 样本和超时次数。默认跑一轮，最多 30 跳；`--rounds 0` 持续观测直到 Ctrl+C（退出码 `130`），保留已写出的完整轮次。`--interval-ms` 是两轮之间的等待时间，默认 1000 ms。
+- `--format jsonl` 每行一条记录：`trace_hop` 是单跳结果，`trace_round` 是轮次结果，包含目标是否出现在响应地址中、观测路径是否变化，以及各跳的累计响应率和最近最多 256 个 RTT 样本的中位数与 P95。首轮 `path_changed` 为 `null`。
+- **某跳未响应不等于该跳转发丢包**。无响应或负载均衡都可能导致观测路径变化；统计仅反映后端报告的探测结果。
+- Windows 使用系统 `tracert.exe`；Linux / macOS 需要可用的 `traceroute`（部分 IPv6 环境使用 `traceroute6`）。默认每个探测的等待时间为 1000 ms；Unix 后端向上取整到秒。每轮完成后写出结果，不逐探测实时写入。
 
 ## 快速上手
 
