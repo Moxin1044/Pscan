@@ -94,6 +94,12 @@ cargo build --release --locked
 - **取消**：`Ctrl-C` 协作取消并 flush 已完成结果
 - **输出**：带状态颜色、稳定列布局和结束汇总的终端文本；JSONL 流式写出
 
+### 功能边界：主机发现不等于路由跟踪
+
+当前版本**没有实现逐跳路由跟踪**，没有 `--tracert` 或 `--traceroute` 参数，也不会输出中间路由器或各跳延迟。`--ping` 和 `--ping-only` 只检查目标是否有响应，不会追踪中间路径。
+
+如果要查看到目标的逐跳路径，请使用系统工具：Windows 用 `tracert <目标>`，Linux / macOS 用 `traceroute <目标>`。这些命令不属于 Pscan。
+
 ## 快速上手
 
 ```bash
@@ -121,6 +127,8 @@ pscan -f targets.txt -p 1-65535 --rate 500 --format jsonl -o scan.jsonl
 
 ## 参数
 
+用 `pscan -h` / `pscan --help` 查看当前二进制支持的参数，`pscan -V` / `pscan --version` 查看版本。
+
 **目标 / 端口**
 
 | 参数 | 说明 |
@@ -145,7 +153,7 @@ pscan -f targets.txt -p 1-65535 --rate 500 --format jsonl -o scan.jsonl
 | 参数 | 说明 |
 |---|---|
 | `-c, --concurrency <N>` | 最大并发网络操作数，默认 512 |
-| `--rate <N>` | 每秒任务启动上限；`0` 为不限速 |
+| `--rate <N>` | 每秒任务启动上限，默认 `0`（不限速） |
 | `--timeout-ms <MS>` | DNS / TCP / UDP / 主机发现超时，默认 1200 |
 | `--fingerprint-timeout-ms <MS>` | 每连接指纹总预算，默认 800 |
 | `--result-buffer <N>` | 结果通道容量，默认 1024 |
@@ -156,7 +164,7 @@ pscan -f targets.txt -p 1-65535 --rate 500 --format jsonl -o scan.jsonl
 |---|---|
 | `-s, --service-detection` | 启用被动 banner + `HEAD /` 探针，仅对 TCP 生效 |
 | `--show-closed` | 输出 closed、`open\|filtered`、`unknown` 等非开放结果 |
-| `--format text\|jsonl` | 输出格式 |
+| `--format text\|jsonl` | 输出格式，默认 `text` |
 | `-o, --output <FILE>` | 写入文件，默认写标准输出 |
 | `--color auto\|always\|never` | 文本颜色策略，默认仅交互终端启用 |
 
@@ -375,6 +383,7 @@ git push origin master v2.0.1
 | `src/syn.rs` | SYN 半开扫描：构包与校验和、回包匹配、超时判定、权限预检 |
 | `src/output.rs` | text / JSONL 流式输出 |
 | `src/main.rs` | Clap CLI、信号处理、结果消费 |
+| `src/updater.rs` | GitHub Release 更新检查、缓存与二进制替换 |
 | `.github/workflows/ci.yml` | fmt / clippy / 三平台测试 / release 构建校验 |
 | `.github/workflows/release.yml` | tag 触发的多平台发布 |
 
